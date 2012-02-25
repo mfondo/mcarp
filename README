@@ -1,1 +1,9 @@
-This is a simple project similar to ucarp. At this point it is not at all stable/complete/safe to use. If you want something that works well, use ucarp (http://www.ucarp.org/project/ucarp)
+This is a simple project similar to ucarp. At this point it is not at all stable/complete/safe to use. If you want something that works well, use ucarp (http://www.ucarp.org/project/ucarp).
+
+Note that mcarp is subject to split brain problems, which results in multiple simultaneous leaders (generally very bad).
+
+leaderScript.sh is a shell script to run when leadership changes (test.sh is provided as a dummy example script for testing)
+This script can do anything, but should do - flush arp cache, set up virtual ip address
+Argument 0 will be passed to tell leaderScript.sh that this node is not the leader, 1 is passed when it is the leader 
+Example args node1: ./mcarp -i 127.0.0.1:8888 -h 5000 -t 15000 -p 8889 -s /bin/leaderScript.sh
+Example args node2: ./mcarp -i 127.0.0.1:8889 -h 5000 -t 15000 -p 8888 -s /bin/leaderScript.sh

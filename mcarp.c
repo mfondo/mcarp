@@ -1,18 +1,3 @@
-/*
-   mcarp is a somewhat crappy clone of ucarp
-http://www.ucarp.org/project/ucarp
-
-leaderScript.sh is a shell script to run when leadership changes
-this script can do anything, but should do - flush arp cache, set up virtual ip address
-argument 0 will be passed to tell leaderScript.sh that this node is not the leader, 1 is passed when it is the leader
-
-Example args node1: ./mcarp -i 127.0.0.1:8888 -h 5000 -t 15000 -p 8889 -s /bin/leaderScript.sh
-Example args node2: ./mcarp -i 127.0.0.1:8889 -h 5000 -t 15000 -p 8888 -s /bin/leaderScript.sh
-
-TODO if isLeader and receive heartbeat do conflict resolution by assuming > ip string is leader,
-so > ip would send a heartbeat immediately and the "false" leader would know it is not the real leader
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/types.h>
@@ -44,6 +29,9 @@ int heartBeatMsgLength;
 char *leaderCommand;
 char *leaderCommandIsLeader;
 char *leaderCommandNotLeader;
+int ipAndPortStrLength = 64 * sizeof(char);//make it large enough for an ipv6 addr string + port
+char *myIpAndPortStr;
+char *fromIpAndPortStr;
 
 inline long getTimeMillis() {
 	return ((long)time(NULL)) * (long)1000;
@@ -182,6 +170,23 @@ int recvHeartbeat() {
 	}
 }
 
+inline void setIpAndPortStr(char *ipAndPortStr, struct sockaddr *sa) {
+	memset(ipAndPortStr, 0, ipAndPortStrLength);
+	inet_ntop(sa->sa_family, sa, ipAndPortStr, ipAndPortStrLength);
+}
+
+void sendHeartbeat() {
+	int i = 0;
+	int sendResult;
+	for(i; i < addrsLength; i++) {
+		memcpy(&buffer, heartBeatMsg, heartBeatMsgLength);
+		sendResult = sendto(serverSock, buffer, BUFFER_LENGTH, 0, (const struct sockaddr *)(&addrs[i]), sizeof(struct sockaddr_in));
+		if (sendResult < 0) {
+			perror("IsLeader send error");
+		}
+	}
+}
+
 int main(int argc, char *argv[]) {	
 	leaderCommand = NULL;
 	sendHeartBeatMillis = 5000;//send a heartbeat after this many millis
@@ -193,6 +198,8 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 	parseArgs(argc, argv);
+	myIpAndPortStr = (char *)malloc(ipAndPortStrLength);
+	fromIpAndPortStr = (char *)malloc(ipAndPortStrLength);
 
 	serverSock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (serverSock < 0) {
@@ -208,6 +215,7 @@ int main(int argc, char *argv[]) {
 		perror("Binding socket");
 		exit(1);
 	}
+	setIpAndPortStr(myIpAndPortStr, (struct sockaddr *)&serverSockAddr);
 
 	struct pollfd fd;
 	fd.fd = serverSock;
@@ -222,7 +230,6 @@ int main(int argc, char *argv[]) {
 			long lastHeartbeatSentMillis = 0;
 			long pollTimeout;
 			int pollResult;
-			int sendResult;
 			while(1) {			
 				//http://linux.die.net/man/2/poll	
 				pollTimeout = lastHeartbeatSentMillis + sendHeartBeatMillis - getTimeMillis();				
@@ -233,21 +240,20 @@ int main(int argc, char *argv[]) {
 				if(pollResult < 0) {
 					perror("IsLeader poll error");
 				} else if(pollResult == 0) {
-					int i = 0;
-					for(i; i < addrsLength; i++) {
-						memcpy(&buffer, heartBeatMsg, heartBeatMsgLength);
-						sendResult = sendto(serverSock, buffer, BUFFER_LENGTH, 0, (const struct sockaddr *)(&addrs[i]), sizeof(struct sockaddr_in));
-						if (sendResult < 0) {
-							perror("IsLeader send error");
-						}
-					}					
+					sendHeartbeat();			
 					lastHeartbeatSentMillis = getTimeMillis();
 				} else {
 					if(fd.revents & POLLIN) {
 						if(recvHeartbeat()) {
-							//if we got here, someone else has taken over as leader, so we set isLeader = false						
-							isLeader = 0;
-							leaderChanged(isLeader);
+							//someone else thinks they are the leader, compare from ip+port to me, whichever sorts lower is the leader
+							//if i am the leader, immediately send a heartbeat msg, which will tell the other leader to not be the leader
+							//since it will get to this same spot, and by comparing ip+port determine that it is not the leader
+							setIpAndPortStr(fromIpAndPortStr, (struct sockaddr *)&from);
+							if(strcmp(myIpAndPortStr, fromIpAndPortStr) < 0) {
+								isLeader = 0;
+								leaderChanged(isLeader);
+								sendHeartbeat();
+							}
 						}						
 						break;
 					} else if(fd.revents & POLLERR) {
@@ -271,6 +277,7 @@ int main(int argc, char *argv[]) {
 				} else if(pollResult == 0) {
 					isLeader = 1;
 					leaderChanged(isLeader);
+					sendHeartbeat();
 					break;
 					//no heartbeats received from leader, take over leadership
 					//TODO random delay to prevent slave storm to take over leadership?
